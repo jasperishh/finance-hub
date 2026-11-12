@@ -39,7 +39,8 @@
   }
   async function call(body) {
     if (!KEY) await askKey();
-    const r = await fetch(API, { method: "POST", body: JSON.stringify({ ...body, key: KEY }) });
+    const ac = new AbortController(); const tm = setTimeout(() => ac.abort(), 45000);
+    let r; try { r = await fetch(API, { method: "POST", body: JSON.stringify({ ...body, key: KEY }), signal: ac.signal }); } finally { clearTimeout(tm); }
     const j = await r.json();
     if (!j.ok) {
       if (j.error === "bad_key") { LS("fh-key", null); KEY = null; await askKey("that key did not work. paste it again."); return call(body); }
@@ -71,7 +72,9 @@
   let queue = Promise.resolve();
   function send(w) {
     pendingWrites++;
-    const p = queue.then(() => call(w)).finally(() => { pendingWrites--; scheduleTables(); });
+    const p = queue.then(() => call(w))
+      .catch((e) => { setTimeout(() => { if (!pendingWrites) load().catch(() => {}); }, 2000); throw e; }) // put the screen back in step with the sheet
+      .finally(() => { pendingWrites--; scheduleTables(); });
     queue = p.catch(() => {});
     return p;
   }
@@ -121,7 +124,11 @@
 
   window.claude = {
     use: async (name) => {
-      if (name === "db") { try { await load(); } catch (e) { console.error(e); return null; } setInterval(() => { if (document.visibilityState === "visible" && !pendingWrites) load().catch(() => {}); }, 30000);
+      if (name === "db") {
+        let ok = false;
+        for (let i = 0; i < 4 && !ok; i++) { try { await load(); ok = true; } catch (e) { console.error(e); if (i < 3) await new Promise((r) => setTimeout(r, 1500 * (i + 1))); } }
+        if (!ok) return null;
+        setInterval(() => { if (document.visibilityState === "visible" && !pendingWrites) load().catch(() => {}); }, 30000);
         document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !pendingWrites) load().catch(() => {}); }); return db; }
       if (name === "user") return user;
       if (name === "assets") return assets;
@@ -132,11 +139,12 @@
 })();
 
 </script>
-</head>
-<body>
 <title>Neils Finance Hub</title>
+<meta name="theme-color" content="#ebf5ff">
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@500;600;700&display=swap">
 <style>
 /* Geist Serif (Vercel, SIL Open Font License 1.1), embedded because Google Fonts does not carry it yet. */
@@ -188,6 +196,7 @@ header.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: 
 nav.tabs { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--sky-tint); padding-block: 8px; margin-block: -8px; }
 .tabrow { display: flex; gap: 4px; background: var(--bone-white); border-radius: var(--radius-pill); padding: 6px; overflow-x: auto; scrollbar-width: none; }
 .tabrow::-webkit-scrollbar { display: none; }
+@media (min-width: 900px) { .tabrow { flex-wrap: wrap; } }
 .tab { all: unset; cursor: pointer; white-space: nowrap; padding: 10px 18px; border-radius: var(--radius-pill); color: var(--graphite); font-size: 15px; }
 .tab:hover { color: var(--ink); }
 .tab[aria-selected="true"] { background: var(--charcoal); color: var(--paper-white); }
@@ -310,7 +319,8 @@ ul.log li { display: flex; justify-content: space-between; align-items: center; 
 .moreform { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
 .moreform > summary { cursor: pointer; color: var(--iris-blue); font-size: 14px; list-style-position: inside; }
 .amtwrap { display: flex; gap: 6px; }
-.amtwrap select { flex: 0 0 auto; padding: 8px 6px; }
+.amtwrap select { flex: 0 0 auto; width: auto; padding: 8px 6px; }
+#spCur, #acCur, #fxCode { text-transform: uppercase; }
 .amtwrap input { flex: 1 1 auto; min-width: 0; }
 .toast { position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   display: flex; align-items: center; gap: 16px; background: var(--charcoal); color: var(--paper-white); border-radius: var(--radius-pill); padding: 10px 12px 10px 20px;
@@ -367,6 +377,7 @@ pre.code { background: var(--charcoal); color: #e8eef6; border-radius: var(--rad
   .monthbar strong { min-width: 0; font-size: 17px; }
   .status { text-align: center; }
   .tabrow { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+  .tabrow.at-end { -webkit-mask-image: none; mask-image: none; }
   .tab { padding: 10px 14px; }
   .card { padding: 22px 16px; border-radius: 24px; }
   .cardhead { margin-bottom: 16px; gap: 10px 16px; }
@@ -536,6 +547,8 @@ td { padding: 11px 10px; }
   .tile .big, .tile input.big { font-size: 21px; }
 }
 </style>
+</head>
+<body>
 
 <div class="wrap" id="app">
   <header class="top">
@@ -1020,7 +1033,6 @@ function importData(text) {
 }
 </script>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 (() => {
   const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -1033,10 +1045,10 @@ function importData(text) {
   const wi = { income: 0, rent: null, debt: 0, spend: 0, oneAmt: 0, oneMonth: "" };
   const partOpen = {};
   let db = null, canWrite = true, viewer = false, armed = null, pending = false, booted = false;
-  const now = new Date();
+  let now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const thisMonth = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
-  const today = `${thisMonth}-${pad(now.getDate())}`;
+  let thisMonth = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
+  let today = `${thisMonth}-${pad(now.getDate())}`;
   let cur = thisMonth, tab = "spending";
   try { const s = localStorage.getItem("fh-month"); if (s) cur = s; } catch (e) {}
   const TABS = ["spending", "overview", "planning", "income", "months", "debts", "plan", "savings", "networth", "year", "rent", "export"];
@@ -1077,14 +1089,41 @@ function importData(text) {
   const icon = { up: '<svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>', down: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
     x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>', lock: '<svg viewBox="0 0 24 24" style="width:14px;height:14px"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>' };
 
+  // Derived numbers are cached until the data changes, so repeated calls inside one render cost nothing.
+  const memoStore = new Map();
+  const bump = () => memoStore.clear();
+  const memo = (name, fn) => (...args) => { const k = name + "\u0001" + args.join("\u0001"); let v = memoStore.get(k); if (v === undefined) { v = fn(...args); memoStore.set(k, v); } return v; };
+  const incomeFor = memo("inc", (m) => incomeForRaw(m));
+  const spendFor = memo("sp", (m) => spendForRaw(m));
+  const monthCalc = memo("mc", (m) => monthCalcRaw(m));
+  const incomeEstimate = memo("ie", () => incomeEstimateRaw());
+  const forecast0 = memo("fc", () => forecastRaw());
+  const forecast = (o) => o ? forecastRaw(o) : forecast0();
+  const taxCalc = memo("tax", (yr) => taxCalcRaw(yr));
+  const spendCats = memo("cats", () => spendCatsRaw());
+  const recurringSuggestions = memo("rec", () => recurringSuggestionsRaw());
+  const presetSuggestions = memo("psug", () => presetSuggestionsRaw());
+  const learned = memo("learn", () => learnedRaw());
+  const debtTrajectory = memo("traj", () => debtTrajectoryRaw());
+  const nwCalc = memo("nw", () => nwCalcRaw());
+  const buildTables = memo("tables", () => buildTablesRaw());
+  // A tab left open past midnight moves on to the new day.
+  function refreshClock() {
+    const d = new Date(); const t = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (t === today) return;
+    now = d; thisMonth = t.slice(0, 7); today = t; bump(); render();
+  }
+  setInterval(refreshClock, 60000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshClock(); });
+
   // ---------- core calculations ----------
-  function incomeFor(m) {
+  function incomeForRaw(m) {
     const es = Object.entries(S.income).filter(([, e]) => (e.date || "").slice(0, 7) === m);
     let total = 0, salary = 0, side = 0, got = 0, n = 0;
     for (const [, e] of es) { if (e.amount == null) continue; n++; const a = +e.amount; total += a; if (e.type === "Side") side += a; else salary += a; if (e.received) got += a; }
     return { es, total, salary, side, got, fromLog: n > 0 };
   }
-  function spendFor(m) {
+  function spendForRaw(m) {
     const es = Object.entries(S.spend).filter(([, e]) => (e.date || "").slice(0, 7) === m);
     const byCat = {}; for (const [, e] of es) byCat[e.category || "Other"] = (byCat[e.category || "Other"] || 0) + (+e.amount || 0);
     const card = sum(es.filter(([, e]) => e.method && e.method !== "cash"), ([, e]) => e.amount);
@@ -1101,9 +1140,11 @@ function importData(text) {
     return b.dueDay && +b.dueDay > +b.closingDay ? stm : shift(stm, 1);
   }
   // A split card spend puts the whole bill on your card, not just your share.
-  const cardEst = (bid, m) => sum(Object.values(S.spend).filter((e) => e.method === bid && e.date && payMonth(bid, e.date) === m), (e) => e.split?.total ?? e.amount);
+  const cardEstRaw = (bid, m) => sum(Object.values(S.spend).filter((e) => e.method === bid && e.date && payMonth(bid, e.date) === m), (e) => e.split?.total ?? e.amount);
 
-  function monthCalc(m) {
+  const cardEst = memo("ce", cardEstRaw);
+
+  function monthCalcRaw(m) {
     const md = S.months[m]; const bills = md?.bills || {};
     let total = 0, paid = 0, open = 0;
     for (const [id, b] of Object.entries(bills)) {
@@ -1115,7 +1156,7 @@ function importData(text) {
       if (d.status === "settled") continue;
       (d.schedule || []).forEach((x, i) => { if (x.month === m) { if (d.direction === "receive") inn += +x.amount; else out += +x.amount; due.push({ id, i, d, x }); } });
     }
-    const ic = incomeFor(m); const sp = spendFor(m); const saving = savingFor(m);
+    const ic = { ...incomeFor(m) }; const sp = spendFor(m); const saving = savingFor(m);
     const annualItems = annualFor(m); const annual = sum(annualItems, (a) => a.amount);
     let income = ic.fromLog ? ic.total : (md?.income ?? null);
     if (income == null && m >= thisMonth && Object.keys(S.income).length) { const est = incomeEstimate(); income = est.lastSalary + est.avgSide; ic.projected = true; }
@@ -1160,7 +1201,7 @@ function importData(text) {
     const vals = Object.keys(S.months).filter((k) => k < before).sort().reverse().map((k) => S.months[k]?.bills?.[id]?.amount).filter((a) => a != null && +a > 0).slice(0, 3).map(Number);
     return vals.length ? avg(vals) : 0;
   }
-  function incomeEstimate() {
+  function incomeEstimateRaw() {
     const sal = Object.values(S.income).filter((e) => e.type !== "Side" && +e.amount > 0).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
     const lastSalary = sal.length ? +sal[0].amount : 0;
     const sideMonths = [1, 2, 3].map((k) => incomeFor(shift(thisMonth, -k)).side);
@@ -1171,7 +1212,7 @@ function importData(text) {
     const left = Math.max(0, (+g.target || 0) - goalSaved(g)); if (!left) return 0;
     const months = monthsBetween(thisMonth, g.targetMonth); return months > 0 ? left / months : left;
   }
-  function forecast(o) {
+  function forecastRaw(o) {
     o = o || {}; const est = incomeEstimate(); const rows = [];
     for (let k = 0; k < 6; k++) {
       const m = shift(thisMonth, k); const notes = [];
@@ -1209,7 +1250,7 @@ function importData(text) {
   // ---------- tax ----------
   const BRACKETS = [[150000, 0], [300000, .05], [500000, .10], [750000, .15], [1000000, .20], [2000000, .25], [5000000, .30], [Infinity, .35]];
   function taxOn(x) { let tax = 0, lo = 0; for (const [hi, r] of BRACKETS) { if (x > lo) tax += (Math.min(x, hi) - lo) * r; lo = hi; } return tax; }
-  function taxCalc(yr) {
+  function taxCalcRaw(yr) {
     const t = S.tax || {}; const est = incomeEstimate();
     const inc = Object.values(S.income).filter((e) => (e.date || "").startsWith(yr));
     const salMonths = new Set(inc.filter((e) => e.type !== "Side" && +e.amount > 0).map((e) => e.date.slice(0, 7)));
@@ -1273,12 +1314,26 @@ function importData(text) {
   $("toastUndo").addEventListener("click", async () => { const f = toastUndo; toastUndo = null; $("toast").hidden = true; if (f) { await f(); status("Undone"); } });
   function confirmTap(btn, key, fn) {
     if (armed === key) { armed = null; fn(); return; }
-    armed = key; btn.textContent = "Tap again to delete";
+    armed = key; btn.textContent = key.startsWith("reopen") ? "Tap again to reopen" : "Tap again to delete";
     setTimeout(() => { if (armed === key) { armed = null; render(); } }, 4000);
   }
 
   // ---------- render ----------
-  function render() {
+  // Only the open tab is drawn. The others are marked stale and drawn the moment they are opened.
+  const PANELS = {
+    overview: () => [renderTiles, renderBills, renderClose],
+    spending: () => [renderQuickExtras, renderPresets, renderWeek, renderSpending, renderPlan],
+    planning: () => [renderPlanning], income: () => [renderIncome],
+    months: () => [renderSix, renderBillHistory, renderHistory],
+    debts: () => [renderPayoff, renderDebts, renderSplits], plan: () => [renderDebtPlan],
+    savings: () => [renderSavings], networth: () => [renderNetworth], year: () => [renderYear], rent: () => [renderRent], export: () => [renderExportInfo],
+  };
+  const stale = new Set(TABS);
+  let renderQueued = false;
+  // Data arrives in bursts (a dozen collections at boot); draw once per frame.
+  function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(); }); }
+  function render() { TABS.forEach((t) => stale.add(t)); renderVisible(); }
+  function renderVisible() {
     if (viewer) { renderShared(); return; }
     const a = document.activeElement;
     if (a && a.closest?.(".wrap") && ["INPUT", "SELECT", "TEXTAREA"].includes(a.tagName) && !a.closest("#addSpend, #filters, #wiForm, #poBudget, #bhSel, #lineForm, #splitRow, #fxRow")) { pending = true; return; }
@@ -1289,9 +1344,14 @@ function importData(text) {
     document.querySelectorAll("[data-edit]").forEach((b) => { b.setAttribute("aria-pressed", String(edit[b.dataset.edit])); b.hidden = !canWrite; b.textContent = edit[b.dataset.edit] ? "Done" : b.dataset.label; });
     const allOn = Object.values(edit).every(Boolean);
     $("editAll").setAttribute("aria-pressed", String(allOn)); $("editAll").textContent = allOn ? "Done editing" : "Edit everything"; $("editAll").hidden = !canWrite;
-    renderTiles(); renderBills(); renderClose(); renderQuickExtras(); renderPresets(); renderWeek(); renderSpending(); renderSplits(); renderNetworth(); renderYear(); renderPlan(); renderPlanning(); renderIncome(); renderSix(); renderBillHistory(); renderHistory(); renderPayoff(); renderDebts(); renderDebtPlan(); renderSavings(); renderRent(); renderExportInfo(); relang();
+    if (stale.has(tab)) {
+      stale.delete(tab);
+      // One broken section must not blank the rest of the page.
+      for (const f of PANELS[tab]()) { try { f(); } catch (e) { console.error(f.name, e); } }
+    }
+    relang();
   }
-  document.addEventListener("focusout", () => setTimeout(() => { if (pending) render(); }, 0));
+  document.addEventListener("focusout", () => setTimeout(() => { if (pending) renderVisible(); }, 0));
 
   function renderTiles() {
     const c = monthCalc(cur); const ic = c.ic; const net = c.inn - c.out;
@@ -1473,11 +1533,11 @@ function importData(text) {
   }
 
   // ---------- spending ----------
-  function spendCats() {
+  function spendCatsRaw() {
     const extra = [...new Set(Object.values(S.spend).map((e) => e.category))].filter((k) => k && !planItems().some((p) => p.name === k));
     const cats = [...planItems().map((p) => p.name), ...extra]; if (!cats.includes("Other")) cats.push("Other"); return cats;
   }
-  function recurringSuggestions() {
+  function recurringSuggestionsRaw() {
     const dismissed = new Set(S.settings.dismissedRecurring || []);
     const names = new Set(Object.values(S.bills).map((b) => (b.name || "").toLowerCase()));
     const groups = {};
@@ -1530,7 +1590,8 @@ function importData(text) {
     fillSel($("spMethod"), methods);
     fillSel($("fCat"), [["", "All categories"], ...cats.map((n) => [n, n])], flt.cat);
     fillSel($("fMethod"), [["", "Any payment"], ...methods], flt.method);
-    if (!$("spDate").value || $("spDate").dataset.month !== cur) { $("spDate").value = cur === thisMonth ? today : `${cur}-01`; $("spDate").dataset.month = cur; }
+    const sd = $("spDate"); const def = cur === thisMonth ? today : `${cur}-01`;
+    if (!sd.value || sd.dataset.month !== cur || sd.value === sd.dataset.auto) { sd.value = def; sd.dataset.auto = def; sd.dataset.month = cur; }
     spHint();
     const todaySpent = sum(Object.values(S.spend).filter((e) => e.date === today), (e) => e.amount);
     $("spendToday").textContent = `Today ${fmt(todaySpent, 2)}`;
@@ -1568,14 +1629,18 @@ function importData(text) {
     }));
 
     renderDaily(cats);
-    // Log with filters
+    renderSpendLog();
+  }
+  function renderSpendLog() {
+    const E = edit.spend && canWrite; const cats = spendCats();
+    const methods = [["cash", "Cash or transfer"], ...cardBills().map(([id, b]) => [id, b.name])];
     const list = filteredSpends(); const filtered = flt.scope === "all" || flt.text || flt.cat || flt.method || flt.min !== "" || flt.max !== "" || flt.from || flt.to;
     $("fLine").innerHTML = filtered ? `${list.length} ${list.length === 1 ? "spend" : "spends"} · ${fmt(sum(list, ([, e]) => e.amount), 2)} <button class="ghost" id="fClear">Clear filters</button>` : "";
     $("fClear")?.addEventListener("click", clearFilters);
     const shown = list.slice(0, 300);
-    const dayTotals = {}; shown.forEach(([, e]) => { dayTotals[e.date] = (dayTotals[e.date] || 0) + (+e.amount || 0); });
+    const dayTotals = {}, dayN = {}; shown.forEach(([, e]) => { dayTotals[e.date] = (dayTotals[e.date] || 0) + (+e.amount || 0); dayN[e.date] = (dayN[e.date] || 0) + 1; });
     let lastDay = null;
-    const dayHead = (e) => { if (E || e.date === lastDay) return ""; lastDay = e.date; const n = shown.filter(([, x]) => x.date === e.date).length;
+    const dayHead = (e) => { if (E || e.date === lastDay) return ""; lastDay = e.date; const n = dayN[e.date];
       return `<tr class="dayhead"><td colspan="2">${weekday(e.date)} ${dshort(e.date)}${e.date === today ? " · Today" : ""} <span class="muted">· ${n} ${n === 1 ? "spend" : "spends"}</span></td><td class="r num">${fmt(dayTotals[e.date], 2)}</td></tr>`; };
     $("spendBody").innerHTML = shown.length ? `<div class="scroll"><table class="${E ? "m-edit" : ""}" style="min-width:0"><tbody>${shown.map(([id, e]) => E ? `<tr>
         <td><div style="display:grid;gap:6px"><input class="txt" type="date" data-sdate="${id}" value="${e.date}" aria-label="Date">
@@ -1594,7 +1659,7 @@ function importData(text) {
     r.querySelectorAll("select[data-smeth]").forEach((s) => s.addEventListener("change", () => write(`spend/${s.dataset.smeth}`, { method: s.value }, true)));
     r.querySelectorAll("input[data-snote]").forEach((i) => i.addEventListener("change", () => write(`spend/${i.dataset.snote}`, { note: i.value.trim() }, true)));
     r.querySelectorAll("button[data-sdel]").forEach((b) => b.addEventListener("click", () => confirmTap(b, "sp:" + b.dataset.sdel, () => remove(`spend/${b.dataset.sdel}`, "Spend deleted"))));
-    relang();
+    relang(r.parentElement);
   }
   const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const weekday = (d) => { const [y, m, dd] = d.split("-").map(Number); return WD[new Date(y, m - 1, dd).getDay()]; };
@@ -1602,7 +1667,7 @@ function importData(text) {
   function clearFilters() {
     Object.assign(flt, { text: "", cat: "", method: "", min: "", max: "", from: "", to: "", scope: "month" });
     ["fText", "fMin", "fMax", "fFrom", "fTo"].forEach((id) => { $(id).value = ""; }); $("fScope").value = "month";
-    renderSpending();
+    renderSpendLog();
   }
   function renderDaily(cats) {
     const m = cur; const n = daysIn(m); const days = Array.from({ length: n }, (_, i) => `${m}-${pad(i + 1)}`);
@@ -1633,14 +1698,14 @@ function importData(text) {
       const wd = weekday(p.d); const isToday = p.d === today; const isWeekend = wd === "Sat" || wd === "Sun";
       const lbl = (i % (n > 20 && bw < 34 ? 2 : 1) === 0 || isToday) ? `<text x="${x + w / 2}" y="${H - 18}" text-anchor="middle" font-size="11" fill="${isToday ? "#0069e0" : isWeekend ? "#0a0d12" : "#535862"}">${i + 1}</text>` : "";
       const wl = i % 7 === 0 || isToday ? `<text x="${x + w / 2}" y="${H - 4}" text-anchor="middle" font-size="10" fill="#93979f">${wd}</text>` : "";
-      return `<g class="daybar" data-day="${p.d}" tabindex="0" role="button" aria-label="${wd} ${dshort(p.d)}: ${fmt(p.total)}"><rect x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B}" fill="transparent"/>${g}<title>${wd} ${dshort(p.d)}: ${fmt(p.total, 2)}${p.n ? ` · ${Object.entries(p.byCat).map(([c, v]) => `${c} ${fmt(v)}`).join(", ")}` : ""}</title>${lbl}${wl}</g>`;
+      return `<g class="daybar" data-day="${p.d}" tabindex="0" role="button" aria-label="${wd} ${dshort(p.d)}: ${fmt(p.total)}"><rect x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B}" fill="transparent"/>${g}<title>${wd} ${dshort(p.d)}: ${fmt(p.total, 2)}${p.n ? ` · ${Object.entries(p.byCat).map(([c, v]) => `${esc(c)} ${fmt(v)}`).join(", ")}` : ""}</title>${lbl}${wl}</g>`;
     }).join("");
     const planLine = perDayPlan ? `<line x1="${L}" x2="${W - R}" y1="${y(perDayPlan)}" y2="${y(perDayPlan)}" stroke="#0a0d12" stroke-dasharray="5 5" stroke-width="1.5"/><text x="${W - R}" y="${y(perDayPlan) - 6}" text-anchor="end" font-size="11" fill="#0a0d12">Plan ${fmt(Math.round(perDayPlan))}/day</text>` : "";
     $("dayChart").innerHTML = `<div style="overflow-x:auto"><svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Spending each day in ${label(m)}" style="min-width:600px">${grid}${bars}${planLine}</svg></div>`;
     const used = cats.filter((c) => es.some((e) => e.category === c));
     $("dayLegend").innerHTML = used.map((c) => `<span><i style="background:${color[c]}"></i>${esc(c)}</span>`).join("");
     $("dayChart").querySelectorAll(".daybar").forEach((g) => {
-      const pick = () => { const d = g.dataset.day; Object.assign(flt, { from: d, to: d, scope: "month" }); $("fFrom").value = d; $("fTo").value = d; $("fScope").value = "month"; renderSpending(); $("spendBody").scrollIntoView({ behavior: "smooth", block: "start" }); };
+      const pick = () => { const d = g.dataset.day; Object.assign(flt, { from: d, to: d, scope: "month" }); $("fFrom").value = d; $("fTo").value = d; $("fScope").value = "month"; renderSpendLog(); $("spendBody").scrollIntoView({ behavior: "smooth", block: "start" }); };
       g.addEventListener("click", pick); g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } });
     });
   }
@@ -1690,13 +1755,16 @@ function importData(text) {
       ${line("", (r) => `<span class="tag st-${r.st}">${{ ok: "OK", tight: "Tight", short: "Short" }[r.st]}</span>`)}
     </tbody></table></div>`;
   }
+  function renderWhatIf(base) {
+    const wiOn = wi.income || wi.rent != null && wi.rent !== "" || wi.debt || wi.spend || wi.oneAmt;
+    $("wiBody").innerHTML = wiOn ? fcTable(forecast(wi), base || forecast()) : `<p class="muted">Type a change above to compare.</p>`;
+  }
   function renderPlanning() {
     const rows = forecast();
     $("fcBody").innerHTML = fcTable(rows);
     const est = incomeEstimate();
     $("fcNote").innerHTML = `* Projected income uses your latest salary (${fmt(est.lastSalary)}) plus your average side income over the last 3 months (${fmt(est.avgSide)}). Card bills use what you logged on each card, or the average of the last 3 statements, whichever is higher. If those statements were mostly everyday spending, this forecast is on the cautious side. Tight means less than ${fmt(3000)} spare.`;
-    const wiOn = wi.income || wi.rent != null && wi.rent !== "" || wi.debt || wi.spend || wi.oneAmt;
-    $("wiBody").innerHTML = wiOn ? fcTable(forecast(wi), rows) : `<p class="muted">Type a change above to compare.</p>`;
+    renderWhatIf(rows);
     if (!$("wiOneMonth").value) $("wiOneMonth").value = shift(thisMonth, 2);
 
     // Big purchases (goals with a target month)
@@ -1937,7 +2005,7 @@ function importData(text) {
       for (const [id] of order) { if (cash <= 0) break; if (bal[id] <= 0.004) continue; const p = Math.min(cash, bal[id]); bal[id] -= p; cash -= p; (pays[id] ||= []).push({ month: m, amount: Math.round(p * 100) / 100, paid: false }); if (bal[id] <= 0.004) done[id] = m; }
       m = shift(m, 1);
     }
-    return { pays, done, end: shift(m, -1), months: k };
+    return { pays, done, end: shift(m, -1), months: k, allDone: !Object.values(bal).some((v) => v > 0.004) };
   }
   function renderPayoff() {
     const owe = debtList().filter(([, d]) => d.direction !== "receive" && d.status !== "settled" && debtLeft(d) > 0);
@@ -1949,10 +2017,13 @@ function importData(text) {
     const small = [...owe].sort((a, b) => debtLeft(a[1]) - debtLeft(b[1]));
     const big = [...owe].sort((a, b) => debtLeft(b[1]) - debtLeft(a[1]));
     const A = simulate(small, budget, start), Bs = simulate(big, budget, start);
-    const card = (title, why, order, r, key) => `<div class="strategy"><h3 style="font-size:20px">${title}</h3><p class="muted">${why}</p>
-      <ol>${order.map(([id, d]) => `<li><span>${esc(d.name)}</span> <span class="muted num">${fmt(debtLeft(d))}, cleared ${short(r.done[id])}</span></li>`).join("")}</ol>
-      <p>All clear by <strong>${label(r.end)}</strong>, ${r.months} months. First debt gone in ${monthsBetween(thisMonth, r.done[order[0][0]])} ${monthsBetween(thisMonth, r.done[order[0][0]]) === 1 ? "month" : "months"}.</p>
-      ${canWrite ? `<div><button class="btn" data-useplan="${key}">Use this plan</button></div>` : ""}</div>`;
+    const card = (title, why, order, r, key) => {
+      const firstDone = Object.values(r.done).sort()[0]; const firstIn = firstDone ? monthsBetween(thisMonth, firstDone) : 0;
+      return `<div class="strategy"><h3 style="font-size:20px">${title}</h3><p class="muted">${why}</p>
+      <ol>${order.map(([id, d]) => `<li><span>${esc(d.name)}</span> <span class="muted num">${fmt(debtLeft(d))}, ${r.done[id] ? `cleared ${short(r.done[id])}` : "not cleared in 20 years"}</span></li>`).join("")}</ol>
+      ${r.allDone ? `<p>All clear by <strong>${label(r.end)}</strong>, ${r.months} months. First debt gone in ${firstIn} ${firstIn === 1 ? "month" : "months"}.</p>`
+        : `<p class="duesoon">${fmt(budget)} a month does not clear these within 20 years. Try a bigger amount.</p>`}
+      ${canWrite && r.allDone ? `<div><button class="btn" data-useplan="${key}">Use this plan</button></div>` : ""}</div>`; };
     $("poBody").innerHTML = `<div class="compare">${card("Smallest first", "Clear the small ones fast, so there are fewer people to pay each month.", small, A, "small")}${card("Biggest first", "Put everything on the largest balance first. With no interest on these, the end date is the same; the difference is which debts close first.", big, Bs, "big")}</div>
       <p class="note" style="margin-top:16px">Using a plan replaces the unpaid future payments on each debt from ${label(start)} onward. Payments you already ticked stay.</p>`;
     $("poBody").querySelectorAll("button[data-useplan]").forEach((b) => b.addEventListener("click", async () => {
@@ -2081,7 +2152,7 @@ function importData(text) {
 
   // ---------- debt plan (trajectory) ----------
   // Unpaid schedule items drive the balances; anything overdue counts as due this month.
-  function debtTrajectory() {
+  function debtTrajectoryRaw() {
     const act = debtList().filter(([, d]) => d.status !== "settled" && debtLeft(d) > 0.004);
     let end = shift(thisMonth, 1);
     const per = act.map(([id, d]) => {
@@ -2319,13 +2390,11 @@ function importData(text) {
     [/\b(netflix|spotify|youtube|icloud|chatgpt|subscription)\b/i, "subscr"],
   ];
   const catByKey = (k) => planItems().map((p) => p.name).find((n) => n.toLowerCase().includes(k === "subscr" ? "subscr" : k)) || null;
-  let learnCache = null, learnStamp = -1;
   const firstWord = (s) => (s || "").trim().toLowerCase().split(/\s+/)[0] || "";
-  function learned() {
-    const stamp = Object.keys(S.spend).length; if (learnCache && learnStamp === stamp) return learnCache;
+  function learnedRaw() {
     const m = {};
     for (const e of Object.values(S.spend)) { const w = firstWord(e.note); if (!w) continue; const x = (m[w] ||= { cat: {}, meth: {} }); x.cat[e.category] = (x.cat[e.category] || 0) + 1; const me = e.method || "cash"; x.meth[me] = (x.meth[me] || 0) + 1; }
-    learnCache = m; learnStamp = stamp; return m;
+    return m;
   }
   const top1 = (o) => Object.entries(o).sort((a, b) => b[1] - a[1])[0]?.[0];
   function guessCat(note) {
@@ -2387,7 +2456,7 @@ function importData(text) {
 
   // ---------- presets ----------
   const presets = () => S.settings.presets || [];
-  function presetSuggestions() {
+  function presetSuggestionsRaw() {
     const have = new Set(presets().map((p) => (p.note || p.name || "").toLowerCase() + "|" + Math.round(p.amount)));
     const since = shift(thisMonth, -2) + "-01"; const counts = {};
     for (const e of Object.values(S.spend)) {
@@ -2560,7 +2629,7 @@ function importData(text) {
 
   // ---------- net worth ----------
   const acctList = () => Object.entries(S.accounts).sort((a, b) => (a[1].order ?? 99) - (b[1].order ?? 99));
-  function nwCalc() {
+  function nwCalcRaw() {
     const rate = +S.settings.usdRate || 0; let assets = 0, missing = 0;
     for (const [, a] of acctList()) { let v = +a.balance || 0; if (a.currency === "USD") { if (rate) v *= rate; else { missing++; v = 0; } } assets += v; }
     const owe = sum(debtList().filter(([, d]) => d.direction !== "receive" && d.status !== "settled"), ([, d]) => debtLeft(d));
@@ -2718,24 +2787,28 @@ function importData(text) {
     if (/^(close|reopen)/.test(t)) return "lock";
     if (/^plan it/.test(t)) return "flag";
     if (/^read with claude/.test(t)) return "spark";
+    if (/^tap again to reopen/.test(t)) return "lock";
     if (/^(delete|remove|tap again)/.test(t)) return "trash";
     if (/^undo/.test(t)) return "undo";
     if (/^edit/.test(t)) return "pencil";
     return null;
   }
-  function decorate() {
+  function decorate(root) {
     const set = (el, i) => { if (i) { if (el.dataset.i !== i) el.dataset.i = i; } else if (el.dataset.i) delete el.dataset.i; };
     const low = (el) => el.textContent.trim().toLowerCase();
     document.querySelectorAll(".tab").forEach((t) => set(t, TAB_I[t.dataset.tab]));
-    document.querySelectorAll("#app h2").forEach((h) => set(h, pickI(H2_I, low(h))));
-    document.querySelectorAll("#app .tile .caption, #app .wk .caption, #app .daystats .caption").forEach((c) => set(c, pickI(CAP_I, low(c))));
-    document.querySelectorAll("#app .btn, #app .editbtn, #app .ghost, #toast .ghost, #slipModal .btn, #slipModal .ghost").forEach((b) => set(b, btnIcon(low(b))));
-    document.querySelectorAll("#app .tag").forEach((t) => set(t, TAG_I[low(t)] || null));
+    const roots = root ? [root] : document.querySelectorAll("#app > header, #app > .panel:not([hidden]), #toast, #slipModal");
+    for (const r of roots) {
+      r.querySelectorAll("h2").forEach((h) => set(h, pickI(H2_I, low(h))));
+      r.querySelectorAll(".tile .caption, .wk .caption, .daystats .caption").forEach((c) => set(c, pickI(CAP_I, low(c))));
+      r.querySelectorAll(".btn, .editbtn, .ghost").forEach((b) => set(b, btnIcon(low(b))));
+      r.querySelectorAll(".tag").forEach((t) => set(t, TAG_I[low(t)] || null));
+    }
   }
-  function relang() { decorate(); }
+  function relang(root) { decorate(root); }
 
   // ---------- export ----------
-  function buildTables() {
+  function buildTablesRaw() {
     const months = [...new Set([...Object.keys(S.months), ...Object.values(S.spend).map((e) => (e.date || "").slice(0, 7)), ...Object.values(S.income).map((e) => (e.date || "").slice(0, 7))])].filter(Boolean).sort();
     const bl = billList(); const dl = debtList(); const gl = goalList();
     const calc = months.map(monthCalc); const num = (v) => v == null ? "" : v;
@@ -2798,9 +2871,16 @@ function importData(text) {
     const names = Object.keys(buildTables().sheets);
     $("sheetList").textContent = `One workbook with ${names.length} tabs: ${names.join(", ")}.`;
   }
+  let xlsxP = null;
+  const loadXlsx = () => xlsxP || (xlsxP = new Promise((res, rej) => {
+    if (window.XLSX) return res(window.XLSX);
+    const sc = document.createElement("script"); sc.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    sc.onload = () => res(window.XLSX); sc.onerror = () => { xlsxP = null; rej(new Error("xlsx failed to load")); }; document.head.appendChild(sc);
+  }));
   $("dlXlsx").addEventListener("click", async () => {
-    const msg = $("dlMsg"); msg.textContent = "";
-    if (!window.XLSX) { msg.textContent = "The Excel builder did not load. Reload the page and try again."; return; }
+    const msg = $("dlMsg"); msg.textContent = "Preparing the file";
+    try { await loadXlsx(); } catch (e) { msg.textContent = "The Excel builder could not load. Check your connection and try again."; return; }
+    msg.textContent = "";
     const dl = await window.claude?.use?.("downloads");
     if (!dl) { msg.textContent = "Downloads are not available in this view."; return; }
     const { sheets, numberCols } = buildTables(); const wb = XLSX.utils.book_new();
@@ -2833,8 +2913,10 @@ function importData(text) {
   $("editAll").addEventListener("click", () => { const on = !Object.values(edit).every(Boolean); Object.keys(edit).forEach((k) => { edit[k] = on; }); armed = null; render(); });
   const showTabInBar = () => { const el = document.querySelector(`.tab[data-tab="${tab}"]`); const row = $("tablist");
     if (el && row) row.scrollTo({ left: el.offsetLeft - (row.clientWidth - el.offsetWidth) / 2, behavior: "smooth" }); };
-  const setTab = (t) => { document.activeElement?.blur?.(); pending = false; tab = t; try { history.replaceState(null, "", "#" + t); } catch (e) { location.hash = t; } render(); $("fab").hidden = viewer || tab === "spending"; showTabInBar(); window.scrollTo({ top: 0 }); };
+  const setTab = (t) => { document.activeElement?.blur?.(); pending = false; tab = t; try { history.replaceState(null, "", "#" + t); } catch (e) { location.hash = t; } renderVisible(); $("fab").hidden = viewer || tab === "spending"; showTabInBar(); window.scrollTo({ top: 0 }); if (t === "export") loadXlsx().catch(() => {}); };
   $("fab").hidden = tab === "spending"; setTimeout(showTabInBar, 0);
+  const tabFade = () => { const row = $("tablist"); row.classList.toggle("at-end", row.scrollLeft + row.clientWidth >= row.scrollWidth - 2); };
+  $("tablist").addEventListener("scroll", tabFade, { passive: true }); addEventListener("resize", tabFade); setTimeout(tabFade, 0);
   $("fab").addEventListener("click", () => { setTab("spending"); setTimeout(() => $("spAmt").focus(), 50); });
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => setTab(t.dataset.tab)));
   $("tablist").addEventListener("keydown", (e) => {
@@ -2842,16 +2924,16 @@ function importData(text) {
     const i = TABS.indexOf(tab) + (e.key === "ArrowRight" ? 1 : -1); const n = TABS[(i + TABS.length) % TABS.length];
     setTab(n); document.querySelector(`.tab[data-tab="${n}"]`).focus();
   });
-  addEventListener("hashchange", () => { const t = location.hash.slice(1); if (TABS.includes(t) && t !== tab) { tab = t; render(); } });
+  addEventListener("hashchange", () => { const t = location.hash.slice(1); if (TABS.includes(t) && t !== tab) setTab(t); });
   const go = (k) => { document.activeElement?.blur?.(); pending = false; cur = shift(cur, k); try { localStorage.setItem("fh-month", cur); } catch (e) {} render(); };
   $("prevM").addEventListener("click", () => go(-1)); $("nextM").addEventListener("click", () => go(1));
 
   // Filters and what-if update as you type.
   const fmap = { fText: "text", fCat: "cat", fMethod: "method", fMin: "min", fMax: "max", fFrom: "from", fTo: "to", fScope: "scope" };
-  Object.entries(fmap).forEach(([id, k]) => $(id).addEventListener("input", (ev) => { flt[k] = ev.target.value; renderSpending(); }));
+  Object.entries(fmap).forEach(([id, k]) => $(id).addEventListener("input", (ev) => { flt[k] = ev.target.value; renderSpendLog(); }));
   const wmap = { wiIncome: "income", wiRent: "rent", wiDebt: "debt", wiSpend: "spend", wiOneAmt: "oneAmt", wiOneMonth: "oneMonth" };
-  Object.entries(wmap).forEach(([id, k]) => $(id).addEventListener("input", (ev) => { const v = ev.target.value; wi[k] = k === "oneMonth" ? v : k === "rent" ? (v === "" ? null : +v) : +v || 0; renderPlanning(); }));
-  $("wiReset").addEventListener("click", () => { Object.assign(wi, { income: 0, rent: null, debt: 0, spend: 0, oneAmt: 0, oneMonth: "" }); Object.keys(wmap).forEach((id) => { $(id).value = ""; }); renderPlanning(); });
+  Object.entries(wmap).forEach(([id, k]) => $(id).addEventListener("input", (ev) => { const v = ev.target.value; wi[k] = k === "oneMonth" ? v : k === "rent" ? (v === "" ? null : +v) : +v || 0; renderWhatIf(); }));
+  $("wiReset").addEventListener("click", () => { Object.assign(wi, { income: 0, rent: null, debt: 0, spend: 0, oneAmt: 0, oneMonth: "" }); Object.keys(wmap).forEach((id) => { $(id).value = ""; }); renderWhatIf(); });
   $("poBudget").addEventListener("change", (ev) => write("meta/settings", { payoffBudget: numOrNull(ev.target.value) }, true));
   $("bhSel").addEventListener("change", () => { $("bhSel").dataset.touched = "1"; renderBillHistory(); });
   $("spCat").addEventListener("change", () => { $("spCat").dataset.touched = "1"; });
@@ -2960,17 +3042,17 @@ function importData(text) {
     }
     const onErr = () => status("Lost connection to your data. Reload to try again.");
     const coll = (name, after) => db.collection(name).onSnapshot((snap) => {
-      const o = {}; snap.docs.forEach((d) => { o[d.id] = d.data(); }); S[name] = o; status(canWrite ? "Up to date" : "Read-only"); render(); after && after();
+      const o = {}; snap.docs.forEach((d) => { o[d.id] = d.data(); }); S[name] = o; bump(); status(canWrite ? "Up to date" : "Read-only"); scheduleRender(); after && after();
     }, onErr);
     coll("shared", () => { if (booted) syncShared(); });
     if (viewer) { render(); return; }
     ["bills", "months", "income", "spend", "goals", "closes", "annual", "accounts", "networth"].forEach((n) => coll(n));
     coll("debts", () => { booted = true; syncShared(); });
-    const metaDoc = (path, key, f) => db.doc(path).onSnapshot((d) => { S[key] = d.exists ? f(d.data()) : (key === "plan" ? null : key === "rent" ? {} : {}); render(); }, onErr);
+    const metaDoc = (path, key, f) => db.doc(path).onSnapshot((d) => { S[key] = d.exists ? f(d.data()) : (key === "plan" ? null : {}); bump(); scheduleRender(); }, onErr);
     metaDoc("meta/plan", "plan", (x) => x); metaDoc("meta/rent", "rent", (x) => x.entries || {});
     metaDoc("meta/settings", "settings", (x) => x); metaDoc("meta/tax", "tax", (x) => x);
     window.claude.use("sample").then((f) => { sampleFn = f; }).catch(() => {});
-    window.claude.use("assets").then((a) => { assetsCap = a; render(); }).catch(() => {});
+    window.claude.use("assets").then((a) => { assetsCap = a; scheduleRender(); }).catch(() => {});
   })();
 })();
 </script>
